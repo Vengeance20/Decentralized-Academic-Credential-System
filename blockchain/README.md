@@ -23,10 +23,10 @@ Nếu muốn tự build lại hoặc kiểm tra Smart Contract trên máy cá nh
 
 **1. Cài đặt các thư viện phụ thuộc:**
 ```bash
-forge install```
+forge install
 
-2. Biên dịch code:
-(Lệnh này sẽ tự động tạo lại thư mục out/ trên máy của bạn)
+**2. Biên dịch code:
+(Lệnh này sẽ tự động tạo lại thư mục out/ trên máy của bạn)**
 
 ```forge build```
 3. Chạy test (nếu có):
