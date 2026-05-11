@@ -1,2 +1,16 @@
-.codex
+# =========================================
+# KÉT SẮT TỐI CAO (Quan trọng nhất)
+# =========================================
+# Dòng này sẽ chặn TẤT CẢ các file có tên là .env ở BẤT KỲ thư mục nào (blockchain, frontend, backend)
+**/.env
+**/.env.*
+# (Tùy chọn) Cho phép đẩy file mẫu lên để đồng đội biết cấu trúc
+!**/.env.example 
 
+# =========================================
+# 1. BLOCKCHAIN (Foundry)
+# =========================================
+blockchain/cache/
+blockchain/out/
+blockchain/broadcast/
+blockchain/reports/
