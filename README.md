@@ -18,12 +18,12 @@ npm install ethers
 
 ## 2. Start the Backend APIs
 
-Move to the directory containing APIs
+Open three seperate terminal windows and move to the directory containing APIs
 ```bash
 cd backend/dev
 ```
 
-Then open three separate terminal windows and run the following commands:
+Then run the following commands:
 
 ### Issuance Portal API
 
