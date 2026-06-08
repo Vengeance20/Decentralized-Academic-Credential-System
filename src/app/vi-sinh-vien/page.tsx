@@ -1,218 +1,136 @@
 "use client";
 import { useState } from 'react';
 import Link from 'next/link';
-import Web3 from "web3"; // Import Web3
 
-declare global {
-  interface Window {
-    ethereum?: any;
-  }
-}
+export default function VerifierPortal() {
+  const [proofFile, setProofFile] = useState<any>(null);
+  const [verificationStatus, setVerificationStatus] = useState<"idle" | "success" | "revoked" | "invalid" | "error">("idle");
+  const [backendMessage, setBackendMessage] = useState("");
+  const [details, setDetails] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
 
-const CONTRACT_ADDRESS = "0x45b0f6A20f44A0Aa3416C9b8338e38C83256724a";
-// ABI gồm hàm kiểm tra quyền và hàm thu hồi
-const CONTRACT_ABI = [
-  {"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"isAuthorizedIssuer","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},
-  {"inputs":[{"internalType":"bytes32","name":"_merkleRoot","type":"bytes32"}],"name":"revokeCredential","outputs":[],"stateMutability":"nonpayable","type":"function"}
-];
+  // Đã xóa các state và biến liên quan đến Revoke (revoking, currentMerkleRoot, CONTRACT_ADDRESS, ABI)
 
-export default function StudentWallet() {
-  const [credential, setCredential] = useState<any>(null);
-  const [selectedCourses, setSelectedCourses] = useState<string[]>([]); 
-  const [disclosureResult, setDisclosureResult] = useState<any>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [isRevoking, setIsRevoking] = useState(false); // State cho Revoke
-
-  const handleFileUpload = (e: any) => {
-    const file = e.target.files[0];
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
     if (!file) return;
+    
     const reader = new FileReader();
-    reader.onload = (event: any) => {
+    reader.onload = (event) => {
       try {
-        const rawJson = JSON.parse(event.target.result);
-        const json = rawJson.data ? rawJson.data : rawJson;
-        const subject = json.credentialSubject || json;
-        const hasName = subject.studentName || subject.fullName || subject.student_name;
-        const hasTranscript = subject.transcript || subject.courses;
-        if (!hasName || !hasTranscript) { alert("Error: Invalid data."); return; }
-        setCredential(json); 
-        setDisclosureResult(null);
-        setSelectedCourses([]); 
-      } catch (err) { alert("Error: Invalid JSON file."); }
+        const json = JSON.parse(event.target?.result as string);
+        setProofFile(json);
+        // Reset states when uploading new file
+        setVerificationStatus("idle");
+        setDetails(null);
+        setBackendMessage("");
+      } catch (err) { 
+        alert("Invalid JSON format!"); 
+      }
     };
     reader.readAsText(file);
   };
 
-  const handleToggleCourse = (code: string) => {
-    setSelectedCourses(prev => prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]);
-  };
-
-  const handleCreateDisclosure = async () => {
-    if (selectedCourses.length === 0) { alert("Please select at least one course!"); return; }
-    setIsLoading(true);
+  const handleVerify = async () => {
+    if (!proofFile) return alert("Please upload a proof file!");
+    setLoading(true);
     try {
-      const subject = credential.credentialSubject || credential;
-      const response = await fetch('http://127.0.0.1:5001/api/wallet/disclose', {
+      const response = await fetch('http://127.0.0.1:5002/api/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ credential_package: credential, course_codes: selectedCourses, student_id: subject.id || subject.studentId }),
+        body: JSON.stringify({ disclosure_package: proofFile }), 
       });
       const result = await response.json();
+      
       if (result.status === "success") {
-        setDisclosureResult(result.disclosure_package);
-        alert("✅ Merkle Proof generated successfully!");
-      } else { alert("Error: " + result.message); }
-    } catch (error) { alert("Connection failed!"); } 
-    finally { setIsLoading(false); }
-  };
-
-  // HÀM THU HỒI QUA METAMASK (KHÔNG QUA BACKEND PRIVATE KEY)
-  const handleRevoke = async () => {
-    if (!credential || !credential.merkle_root) return alert("No credential loaded!");
-    if (!window.ethereum) return alert("MetaMask not found!");
-
-    setIsRevoking(true);
-    try {
-      const web3 = new Web3(window.ethereum);
-      const contract = new web3.eth.Contract(CONTRACT_ABI, CONTRACT_ADDRESS);
-
-      // 1. Yêu cầu kết nối MetaMask
-      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
-      if (accounts.length === 0) { alert("No account connected!"); return; }
-      const connectedAddress = accounts[0];
-
-      // 2. Ép mạng Sepolia
-      try {
-        await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0xaa36a7' }] });
-      } catch { alert("Please switch to Sepolia!"); return; }
-
-      // 3. Check xem ví vừa kết nối có quyền Issuer không
-      const isAuthorized = await contract.methods.isAuthorizedIssuer(connectedAddress).call();
-      if (!isAuthorized) {
-        alert("❌ Access Denied: The connected MetaMask wallet does not have Issuer permission!");
-        return;
+        setVerificationStatus("success");
+        setDetails(result.details);
+        setBackendMessage(result.message || "Verification complete. Credential is authentic.");
+      } else if (result.status === "revoked") {
+        setVerificationStatus("revoked");
+        setBackendMessage(result.message || "This credential has been revoked!");
+        setDetails(result.details || null);
+      } else { 
+        setVerificationStatus(result.status || "invalid"); 
+        setBackendMessage(result.message || "Verification failed.");
+        setDetails(null);
       }
-
-      // 4. Nếu có quyền, gọi hàm thu hồi trên Blockchain (MetaMask sẽ hiện popup ký xác nhận)
-      if (!confirm("⚠️ Are you sure you want to REVOKE this credential? This cannot be undone!")) return;
-
-      let rootHex = credential.merkle_root.startsWith('0x') ? credential.merkle_root : '0x' + credential.merkle_root;
-      
-      await contract.methods.revokeCredential(rootHex).send({ from: connectedAddress });
-      
-      alert("✅ Credential Revoked Successfully on Blockchain!");
-
-    } catch (error: any) {
-      console.error(error);
-      if (error.code === 4001) { alert("Transaction rejected by user."); } 
-      else { alert("Revocation Failed: " + (error.message || "Unknown error")); }
-    } finally {
-      setIsRevoking(false);
+    } catch (error) {
+      setVerificationStatus("error");
+      setBackendMessage("Verifier API (Port 5002) is offline.");
+      setDetails(null);
+    } finally { 
+      setLoading(false); 
     }
   };
 
-  const subjectInfo = credential?.credentialSubject || credential;
-  const transcript = subjectInfo?.transcript || subjectInfo?.courses || [];
-
   return (
-    <div className="min-h-screen bg-slate-900 text-white p-8 font-sans">
-      <div className="max-w-3xl mx-auto">
-        <Link href="/" className="text-emerald-400 hover:underline mb-8 inline-block font-medium">← Back to Home</Link>
-        
-        <div className="bg-slate-800 p-10 rounded-[2.5rem] border border-emerald-500/20 shadow-2xl">
+    <div className="min-h-screen bg-slate-900 text-white p-8 flex items-center justify-center font-sans tracking-tight">
+      <div className="max-w-2xl w-full">
+        <Link href="/" className="text-orange-400 hover:underline mb-8 inline-block font-medium">← Back to Home</Link>
+        <div className="bg-slate-800 p-10 rounded-[2rem] border border-slate-700 shadow-2xl">
           <div className="text-center mb-10">
-            <h2 className="text-3xl font-black text-emerald-400 mb-2 uppercase tracking-tight">Student Wallet</h2>
-            <p className="text-slate-400 text-sm">Secure Grade Disclosure using Merkle Tree & Blockchain</p>
+            <h2 className="text-3xl font-black text-orange-500 mb-2 uppercase tracking-tighter">Verifier Portal</h2>
+            <p className="text-slate-500 text-sm italic">Merkle Proof & Blockchain Verification</p>
           </div>
           
-          {!credential ? (
-            <div className="border-2 border-dashed border-slate-700 rounded-[2rem] p-20 bg-slate-900/50 hover:border-emerald-500/50 transition-all text-center relative group cursor-pointer">
-              <input type="file" accept=".json" onChange={handleFileUpload} className="absolute inset-0 opacity-0 cursor-pointer" />
-              <div className="text-6xl mb-4 group-hover:scale-110 transition-transform duration-300">📤</div>
-              <p className="text-slate-300 font-bold text-lg">Upload Digital Credential (.json)</p>
-            </div>
-          ) : (
-            <div className="space-y-8">
-              <div className="p-6 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl flex justify-between items-center shadow-inner">
-                <div>
-                  <p className="text-emerald-400 font-black text-[10px] uppercase tracking-widest mb-1">Holder</p>
-                  <p className="text-2xl font-black text-white leading-tight">{subjectInfo.studentName || subjectInfo.fullName}</p>
-                  <p className="text-xs text-slate-500 font-mono mt-1">Student ID: {subjectInfo.id || subjectInfo.studentId}</p>
-                </div>
-                <div className="flex gap-2">
-                  <button 
-                    onClick={handleRevoke} 
-                    disabled={isRevoking} 
-                    className="px-4 py-2 bg-orange-500/10 text-orange-400 border border-orange-500/20 text-[10px] font-bold rounded-full hover:bg-orange-500 hover:text-white transition-all disabled:opacity-50"
-                  >
-                    {isRevoking ? "Revoking..." : "🔥 Revoke (Admin)"}
-                  </button>
-                  <button 
-                    onClick={() => {setCredential(null); setDisclosureResult(null); setSelectedCourses([]);}} 
-                    className="px-4 py-2 bg-red-500/10 text-red-500 border border-red-500/20 text-[10px] font-bold rounded-full hover:bg-red-500 hover:text-white transition-all"
-                  >
-                    Delete File
-                  </button>
-                </div>
-              </div>
+          <div className="border-2 border-dashed border-slate-700 rounded-[2rem] p-12 mb-8 bg-slate-900/50 relative text-center">
+            <input type="file" accept=".json" onChange={handleFileChange} className="absolute inset-0 opacity-0 cursor-pointer" />
+            <div className="text-5xl mb-4">{proofFile ? "📄" : "📥"}</div>
+            <p className="text-slate-300 font-bold">{proofFile ? "File Ready" : "Upload Proof (.json)"}</p>
+          </div>
 
-              <div className="text-left">
-                <label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.3em] mb-4 block">Select courses to disclose grades (Multiple):</label>
-                <div className="grid grid-cols-1 gap-3 max-h-[300px] overflow-y-auto pr-2">
-                  {transcript.map((course: any, idx: number) => {
-                    const cCode = course.courseCode || course.code;
-                    const cName = course.courseName || course.name;
-                    return (
-                      <button key={idx} onClick={() => handleToggleCourse(cCode)}
-                        className={`flex items-center justify-between p-5 rounded-2xl border transition-all duration-300 ${
-                          selectedCourses.includes(cCode) ? 'bg-emerald-600 border-emerald-400 text-white shadow-[0_10px_25px_-5px_rgba(16,185,129,0.4)] scale-[1.01]' : 'bg-slate-900/60 border-slate-700 text-slate-400 hover:border-slate-500'
-                        }`}>
-                        <div className="text-left">
-                          <p className="font-bold text-lg">{cName}</p>
-                          <p className="text-[10px] opacity-60 uppercase tracking-widest">{cCode} • {course.semester || 'Current Sem'}</p>
-                        </div>
-                        <div className="text-right">
-                          <p className="text-[10px] uppercase opacity-50 font-bold">Grade</p>
-                          <span className="text-2xl font-black">{course.grade}</span>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
+          {/* Đã xóa div flex và nút Revoke, chỉ giữ lại nút Verify duy nhất */}
+          <button 
+            onClick={handleVerify} 
+            disabled={loading} 
+            className="w-full py-5 rounded-2xl font-black text-xl bg-orange-500 text-slate-900 hover:bg-orange-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-xl shadow-orange-500/20"
+          >
+            {loading ? "VERIFYING..." : "VERIFY NOW"}
+          </button>
 
-              <button onClick={handleCreateDisclosure} disabled={isLoading}
-                className={`w-full py-5 rounded-2xl font-black text-xl transition-all shadow-xl uppercase tracking-widest ${
-                    isLoading ? 'bg-slate-700 text-slate-500 cursor-not-allowed' : 'bg-emerald-500 text-slate-900 hover:bg-emerald-400 shadow-emerald-500/20'
+          {verificationStatus !== "idle" && (
+            <div className={`mt-8 p-8 rounded-3xl border-2 ${
+              verificationStatus === "success" 
+                ? 'bg-emerald-500/10 border-emerald-500/40' 
+                : verificationStatus === "revoked"
+                ? 'bg-yellow-500/10 border-yellow-500/40'
+                : 'bg-red-500/10 border-red-500/40'
+            }`}>
+              <div className="flex flex-col items-center text-center">
+                <h3 className={`text-xl font-black uppercase mb-2 ${
+                  verificationStatus === "success" 
+                    ? 'text-emerald-400' 
+                    : verificationStatus === "revoked"
+                    ? 'text-yellow-400'
+                    : 'text-red-400'
                 }`}>
-                {isLoading ? "Processing Merkle Proof..." : "Confirm & Generate Proof"}
-              </button>
-            </div>
-          )}
-
-          {disclosureResult && (
-            <div className="mt-10 p-8 bg-slate-900/80 rounded-[2.5rem] border-2 border-blue-500/40 shadow-2xl">
-              <div className="flex flex-col items-center">
-                <div className="w-16 h-16 bg-blue-500/20 rounded-full flex items-center justify-center mb-4">
-                  <span className="text-3xl">🛡️</span>
-                </div>
-                <h3 className="text-blue-400 font-black uppercase tracking-widest text-sm mb-2">Secure Disclosure Successful</h3>
-                <p className="text-slate-500 text-xs text-center mb-8 max-w-[80%] leading-relaxed">
-                  Merkle Proof for <span className="text-white font-bold">{selectedCourses.join(', ')}</span> has been signed. 
-                  The verifier will not be able to see your other courses.
-                </p>
-                <button onClick={() => {
-                    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(disclosureResult, null, 2));
-                    const link = document.createElement('a');
-                    link.setAttribute("href", dataStr);
-                    const sId = subjectInfo.id || subjectInfo.studentId;
-                    link.setAttribute("download", `Proof_${selectedCourses.join('_')}_${sId}.json`);
-                    link.click();
-                  }}
-                  className="w-full py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-black text-sm transition-all shadow-lg shadow-blue-600/30 uppercase"
-                >
-                  Download Proof File (For Verifier)
-                </button>
+                  {verificationStatus === "success" ? "AUTHENTIC" : verificationStatus === "revoked" ? "REVOKED" : "INVALID / ERROR"}
+                </h3>
+                <p className="text-slate-300 text-sm italic mb-4">"{backendMessage}"</p>
+                
+                {details && (
+                  <div className="w-full bg-slate-900/50 p-5 rounded-xl border border-slate-700/50 text-left">
+                    <p className="text-orange-400 text-[10px] font-bold uppercase tracking-widest mb-3">Disclosed Data:</p>
+                    
+                    {details.subjects && details.subjects.length > 0 ? (
+                      <div className="space-y-2">
+                        {details.subjects.map((subj: any, idx: number) => (
+                          <div key={idx} className="flex justify-between items-center bg-slate-800/80 px-4 py-3 rounded-lg border border-slate-700">
+                            <span className="text-white font-bold">{subj.courseCode}</span>
+                            <span className="text-emerald-400 font-mono font-bold text-lg">{subj.grade}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-slate-400 text-sm">No subjects disclosed.</p>
+                    )}
+                    
+                    {details.result && (
+                      <p className="text-slate-500 text-[10px] mt-3 uppercase tracking-wider">{details.result}</p>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}
