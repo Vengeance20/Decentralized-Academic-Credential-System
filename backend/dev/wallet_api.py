@@ -10,7 +10,7 @@ def api_disclose():
         req_body = request.json
         raw_json = req_body.get('credential_package', {})
         actual_vc = raw_json.get('data', raw_json)
-        
+
         course_codes = req_body.get('course_codes', [])
         if not course_codes or not isinstance(course_codes, list):
             return jsonify({"status": "error", "message": "Please select at least one course!"}), 400
@@ -27,6 +27,8 @@ def api_disclose():
             if code in merkle_proofs:
                 specific_proofs[code] = merkle_proofs[code]
 
+        proof_data = actual_vc.get('proof', {})
+
         disclosure_package = {
             "credential": {
                 "issuer": actual_vc.get('issuer'),
@@ -35,7 +37,7 @@ def api_disclose():
             "revealedData": revealed_courses, 
             "merkleProof": specific_proofs,   
             "merkle_root": merkle_root,    
-            "signature": actual_vc.get('proof', {}).get('signatureValue', "0x_valid_signature_format")
+            "proof": proof_data  
         }
                 
         return jsonify({"status": "success", "disclosure_package": disclosure_package}), 200

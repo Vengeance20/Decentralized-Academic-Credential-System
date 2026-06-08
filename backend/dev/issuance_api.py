@@ -7,18 +7,15 @@ from web3 import Web3
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "http://localhost:3000"}})
 
-# --- KẾT NỐI WEB3 VÀ SMART CONTRACT ---
 RPC_URL = "https://ethereum-sepolia-rpc.publicnode.com"
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
 CONTRACT_ADDRESS = "0x45b0f6A20f44A0Aa3416C9b8338e38C83256724a"
 
-# Chỉ trích xuất ABI cần thiết cho hàm isAuthorizedIssuer để code gọn gàng
 CONTRACT_ABI = [
     {"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"isAuthorizedIssuer","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"}
 ]
 
 contract = w3.eth.contract(address=CONTRACT_ADDRESS, abi=CONTRACT_ABI)
-# --------------------------------------
 
 def hash_leaf(data: str) -> str:
     return Web3.keccak(text=data).hex()
@@ -62,21 +59,15 @@ def get_merkle_proofs(tree: list[list[str]]) -> dict:
         proofs[i] = proof
     return proofs
 
-# API MỚI: KIỂM TRA QUYỀN CỦA VÍ TRƯỜNG HỌC
 @app.route('/api/check-issuer', methods=['POST'])
 def check_issuer():
     try:
         data = request.json
         address = data.get("address")
-
         if not address or not w3.is_address(address):
             return jsonify({"status": "error", "message": "Invalid wallet address"}), 400
-
-        # GỌI HÀM isAuthorizedIssuer TRÊN BLOCKCHAIN
         is_authorized = contract.functions.isAuthorizedIssuer(address).call()
-
         return jsonify({"status": "success", "isAuthorized": is_authorized}), 200
-
     except Exception as e:
         print(f"Check Issuer Error: {e}")
         return jsonify({"status": "error", "message": "Failed to check authorization on blockchain."}), 500
@@ -88,10 +79,14 @@ def api_issue():
         data = request.json
         issuer_address = data.get("issuerAddress")
         
+        signature_from_client = data.get("signature")
+        
         if not issuer_address:
             return jsonify({"status": "error", "message": "Issuer wallet not connected!"}), 403
 
-        # BẢO MẬT: KIỂM TRA LẠI QUYỀN TRƯỚC KHI CẤP BẰNG (Chống hack gọi API trực tiếp)
+        if not signature_from_client:
+            return jsonify({"status": "error", "message": "Missing cryptographic signature from Issuer!"}), 400
+
         is_authorized = contract.functions.isAuthorizedIssuer(issuer_address).call()
         if not is_authorized:
             return jsonify({
@@ -99,7 +94,6 @@ def api_issue():
                 "message": "Unauthorized: This wallet does not have Issuer permission on Blockchain!"
             }), 403
 
-        # --- ĐOẠN CODE CẤP BẰNG CỦA BẠN ---
         courses = data.get("courses", data.get("transcript", []))
         if not courses and "credentialSubject" in data:
             subj = data.get("credentialSubject", {})
@@ -136,7 +130,8 @@ def api_issue():
             "proof": {
                 "type": "EthereumEip712Signature2021",
                 "proofPurpose": "assertionMethod",
-                "verificationMethod": f"{issuer_address}#key-1" 
+                "verificationMethod": f"{issuer_address}#key-1",
+                "proofValue": signature_from_client 
             }
         }
         
