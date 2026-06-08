@@ -62,6 +62,8 @@ Once the frontend has started successfully, open your browser and navigate to:
 ```text
 http://localhost:3000/
 ```
+Please import the private key in MetaMask to connect and use the Issuance and Revocation features: 2983aa26f71004bd8659efc69c1e003c4f2cc87a7366c979f352c8388e2cebc1
+
 
 ---
 
