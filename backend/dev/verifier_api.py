@@ -1,15 +1,17 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from web3 import Web3
+from eth_account.messages import encode_defunct
 
 app = Flask(__name__)
+# Cho phép kết nối từ giao diện React/Next.js chạy ở port 3000
 CORS(app, resources={r"/api/*": {"origins": "http://localhost:3000"}})
 
 RPC_URL = "https://ethereum-sepolia-rpc.publicnode.com"
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
 CONTRACT_ADDRESS = "0x45b0f6A20f44A0Aa3416C9b8338e38C83256724a"
 
-# Chỉ giữ lại ABI cho hàm isRevoked (có 2 inputs: address và bytes32)
+# ABI cho hàm isRevoked kiểm tra trạng thái trên Smart Contract
 CONTRACT_ABI = [
     {"inputs": [
         {"internalType": "address", "name": "", "type": "address"},
@@ -37,25 +39,42 @@ def api_verify():
         if not package:
             return jsonify({"status": "error", "message": "Merkle proof package not found"}), 400
 
-        # Lấy mảng các môn học đã chọn
+        # Trích xuất dữ liệu học bạ rút gọn
         revealed_data_list = package.get('revealedData', [])
-        # Lấy dictionary chứa proof của từng môn
         merkle_proofs_dict = package.get('merkleProof', {})
         merkle_root = package.get('merkle_root')
-        
-        # Lấy địa chỉ ví của Trường (Issuer) từ gói Proof để kiểm tra thu hồi
         issuer_address = package.get('credential', {}).get('issuer')
+        
+        # ĐỒNG BỘ ĐÚNG DỮ LIỆU: Trích xuất cụm proof và chữ ký thật từ file ví chuyển sang
+        proof_obj = package.get('proof', {})
+        # Phụ thuộc vào key bạn lưu chữ ký thật lúc cấp bằng (thường là proofValue hoặc signatureValue)
+        signature = proof_obj.get('proofValue') or proof_obj.get('signatureValue') or package.get('signature')
 
-        if not revealed_data_list or not merkle_root or not issuer_address:
-            return jsonify({"status": "error", "message": "Missing revealed data, merkle root, or issuer address"}), 400
+        # Kiểm tra tính toàn vẹn của dữ liệu đầu vào
+        if not revealed_data_list or not merkle_root or not issuer_address or not signature:
+            return jsonify({"status": "error", "message": "Missing revealed data, merkle root, issuer address, or cryptographic signature"}), 400
 
-        # --- KIỂM TRA BLOCKCHAIN REVOKED ---
+        # --- LỚP BẢO MẬT 1: XÁC THỰC CHỮ KÝ SỐ CRYPTOGRAPHIC (ECDSA) ---
+        try:
+            # Mã hóa lại thông điệp Merkle Root để kiểm tra xem có đúng chữ ký này ký cho Root này không
+            message_hash = encode_defunct(hexstr=merkle_root)
+            # Dùng Web3 khôi phục địa chỉ ví công khai từ chữ ký nhận được
+            recovered_address = w3.eth.account.recover_message(message_hash, signature=signature)
+            
+            # So sánh ví khôi phục được với địa chỉ ví của Trường (Issuer) trong văn bằng
+            if recovered_address.lower() != issuer_address.lower():
+                return jsonify({
+                    "status": "invalid_signature",
+                    "message": "Cryptographic signature validation failed! The credential was not signed by the claimed Issuer."
+                }), 200
+        except Exception as sig_err:
+            print(f"Signature recovery error: {sig_err}")
+            return jsonify({"status": "invalid_signature", "message": "Invalid signature format or corrupted proof value."}), 200
+
+        # --- LỚP BẢO MẬT 2: KIỂM TRA BLOCKCHAIN REVOKED (TRẠNG THÁI THU HỒI) ---
         is_revoked = False
         try:
-            # Chuyển hex string sang bytes32
             root_bytes = bytes.fromhex(merkle_root[2:]) if merkle_root.startswith('0x') else bytes.fromhex(merkle_root)
-            
-            # GỌI HÀM isRevoked(address, bytes32) - Phải có đủ 2 tham số này theo ABI contract
             is_revoked = contract.functions.isRevoked(issuer_address, root_bytes).call()
         except Exception as e:
             print(f"Blockchain read error: {e}")
@@ -63,21 +82,17 @@ def api_verify():
         if is_revoked:
             return jsonify({"status": "revoked", "message": "Credential has been revoked by the School!"}), 200
 
-        # --- VERIFY MERKLE PROOF CHO TỪNG MÔN HỌC ---
         verified_courses = []
         
         for course in revealed_data_list:
             course_code = course.get('courseCode', 'N/A')
             grade = course.get('grade', 'N/A')
             
-            # Lấy proof của riêng môn này từ dict
             proof_steps = merkle_proofs_dict.get(course_code, [])
 
-            # 1. Tính toán lại hash của môn học (Leaf)
             leaf_data = f"{course_code}-{grade}"
             current_hash = Web3.keccak(text=leaf_data).hex()
 
-            # 2. Dùng Merkle Proof tính toán lại Root
             for step in proof_steps:
                 sibling_hash = step.get("hash")
                 side = step.get("side")
@@ -86,25 +101,23 @@ def api_verify():
                 else:
                     current_hash = hash_node(current_hash, sibling_hash)
 
-            # 3. So sánh Root tính toán với Root gốc
             if current_hash != merkle_root:
                 return jsonify({
                     "status": "invalid", 
-                    "message": f"Invalid Merkle Proof for course {course_code}! Data may be tampered."
+                    "message": f"Invalid Merkle Proof for course {course_code}! Data has been tampered or modified."
                 }), 200
             
             verified_courses.append({"courseCode": course_code, "grade": grade})
 
-        # Nếu chạy đến đây nghĩa là tất cả các môn đều hợp lệ
         details_str = ", ".join([f"{c['courseCode']}: {c['grade']}" for c in verified_courses])
         
         return jsonify({
             "status": "success",
-            "message": "Merkle Proof is cryptographically valid for all selected courses!",
+            "message": "Cryptographic signature and Merkle Proof are valid for all selected courses!",
             "merkle_root": merkle_root,
             "details": {
                 "subjects": verified_courses,
-                "result": f"Grades verified: {details_str}"
+                "result": f"Grades verified successfully: {details_str}"
             }
         }), 200
 

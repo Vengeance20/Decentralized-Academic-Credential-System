@@ -1,7 +1,7 @@
 "use client";
 import { useState } from 'react';
 import Link from 'next/link';
-import Web3 from "web3"; // Chỉ cần import Web3
+import Web3 from "web3";
 
 declare global {
   interface Window {
@@ -94,23 +94,76 @@ export default function IssuancePortal() {
     });
   };
 
-  // HÀM CẤP BẰNG - ĐÃ SỬA LỖI CHECKSUM Ở ĐÂY
+  // --- HÀM BỔ TRỢ MẬT MÃ TÍNH MERKLE ROOT TRỰC TIẾP TẠI FRONT-END ---
+  const calculateMerkleRootAtClient = (courses: any[]) => {
+    const web3 = new Web3();
+    
+    // 1. Tính toán nút lá giống hàm hash_leaf của Flask
+    const leaves = courses.map(c => {
+      const leafText = `${c.courseCode}-${c.grade}`;
+      return web3.utils.keccak256(leafText);
+    });
+
+    if (leaves.length === 0) return "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+    // 2. Cuốn chiếu dựng cây ngược lên Đỉnh giống hàm build_merkle_tree của Flask
+    let currentLevel = [...leaves];
+    while (currentLevel.length > 1) {
+      const nextLevel = [];
+      for (let i = 0; i < currentLevel.length; i += 2) {
+        const left = currentLevel[i];
+        const right = (i + 1 < currentLevel.length) ? currentLevel[i + 1] : left;
+        
+        // Chuẩn hóa chuỗi hex bốc bytes ghép nút cha giống hash_node của Flask
+        const leftStr = left.startsWith('0x') ? left.slice(2) : left;
+        const rightStr = right.startsWith('0x') ? right.slice(2) : right;
+        const combinedHex = '0x' + leftStr + rightStr;
+        
+        nextLevel.append ? nextLevel.push(web3.utils.keccak256(combinedHex)) : nextLevel.push(web3.utils.keccak256(combinedHex));
+      }
+      currentLevel = nextLevel;
+    }
+    return currentLevel[0];
+  };
+
+  // HÀM CẤP BẰNG - ĐÃ ĐỒNG BỘ CHỮ KÝ THẬT VỚI BACKEND VÀ VERIFY
   const handleIssue = async () => {
     if (!walletAddress) return alert("Wallet not connected!");
     if (!formData.studentName || !formData.studentId) return alert("Please fill Student Name and ID!");
     
     setIsIssuing(true);
     try {
-      // FIX LỖI: Chuyển địa chỉ ví sang chuẩn EIP-55 Checksum trước khi gửi cho Backend Python
       const web3 = new Web3(window.ethereum);
       const checksumAddress = web3.utils.toChecksumAddress(walletAddress);
 
+      // BƯỚC 1: Tự động tính toán Merkle Root từ dữ liệu học bạ động của Form
+      const clientComputedRoot = calculateMerkleRootAtClient(formData.courses);
+      console.log("Calculated Merkle Root for Signature:", clientComputedRoot);
+
+      // BƯỚC 2: Bật popup kích hoạt MetaMask ký xác nhận ĐÚNG vào mã Root này
+      let cryptographicSignature;
+      try {
+        // Sử dụng eth_sign hoặc personal_sign để sinh chữ ký chuẩn cho verify_api giải mã
+        cryptographicSignature = await window.ethereum.request({
+          method: "personal_sign",
+          params: [clientComputedRoot, walletAddress]
+        });
+      } catch (signError: any) {
+        setIsIssuing(false);
+        if (signError.code === 4001) {
+          return alert("❌ Issuance canceled: You rejected the signature request on MetaMask.");
+        }
+        return alert("Failed to generate signature from MetaMask: " + signError.message);
+      }
+
+      // BƯỚC 3: Bắn duy nhất 1 endpoint nộp toàn bộ dữ liệu kèm chữ ký xịn lên Flask
       const response = await fetch('http://127.0.0.1:5000/api/issue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...formData,
-          issuerAddress: checksumAddress // Gửi địa chỉ đã chuẩn hóa thay vì walletAddress ban đầu
+          issuerAddress: checksumAddress,
+          signature: cryptographicSignature // Trường chữ ký thật gửi lên cho Flask hứng
         }),
       });
 
